@@ -1,0 +1,1799 @@
+{
+  "name": "Automate Money Tracker",
+  "nodes": [
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e27abaaa-9e03-4358-a15e-53d08e9d1041",
+              "name": "={{ $json.text }}",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "20403c4b-630c-4d3f-a42e-45f73e80b1c9",
+              "name": "",
+              "value": "",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        400,
+        -608
+      ],
+      "id": "36c0a4f9-9116-446b-b94f-f6f9d5c526b6",
+      "name": "Pesan"
+    },
+    {
+      "parameters": {
+        "jsCode": "const text = $('Siapkan Pesan').first().json.text;\n\nconst sistem = `Kamu mengklasifikasi catatan keuangan pribadi berbahasa Indonesia.\nBalas HANYA JSON: {\"kategori\": \"...\", \"keterangan\": \"...\"}\nkategori harus salah satu: Makanan, Transport, Belanja, Tagihan, Hiburan, Lainnya, Pemasukan.\nketerangan: 2-4 kata, tanpa angka nominal.\n\nPanduan:\n- Makanan: makan, minum, kopi, jajan, bahan makanan\n- Transport: ojol, bensin, parkir, tol, tiket KRL/bus\n- Belanja: barang (baju, sepatu, alat), belanja online\n- Tagihan: listrik, air, wifi, paket data, kuota, pulsa, cicilan, langganan\n- Hiburan: nonton, game, streaming, rekreasi\n- Pemasukan: uang masuk, bukan pengeluaran\n- Lainnya: hanya jika benar-benar tidak ada yang cocok\n\nContoh:\n\"beli paket data 50rb\" -> {\"kategori\":\"Tagihan\",\"keterangan\":\"paket data\"}\n\"isi pulsa 20rb\" -> {\"kategori\":\"Tagihan\",\"keterangan\":\"pulsa\"}\n\"gojek ke kantor 18rb\" -> {\"kategori\":\"Transport\",\"keterangan\":\"gojek\"}\n\"beli sepatu 450rb\" -> {\"kategori\":\"Belanja\",\"keterangan\":\"sepatu\"}\n\"makan siang 25rb\" -> {\"kategori\":\"Makanan\",\"keterangan\":\"makan siang\"}`;\n\nreturn [{\n  json: {\n    text,\n    body: {\n      model: \"qwen2.5:3b\",\n      stream: false,\n      format: \"json\",\n      options: { temperature: 0 },\n      messages: [\n        { role: \"system\", content: sistem },\n        { role: \"user\", content: \"Pesan: \" + text }\n      ]\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        -608
+      ],
+      "id": "52cccd31-bccd-4fd1-8d65-d7af952c7463",
+      "name": "Bangun Prompt"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        832,
+        -608
+      ],
+      "id": "f4f86c95-821b-492e-93e7-7d9787906a26",
+      "name": "Ollama",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const teks = $('Siapkan Pesan').first().json.text;\nconst raw = $input.first().json.message?.content ?? '';\n\nconst KATEGORI = ['Makanan', 'Transport', 'Belanja', 'Tagihan', 'Hiburan', 'Lainnya', 'Pemasukan'];\n\nfunction gagal(alasan) {\n  return [{ json: { valid: false, alasan, teks, balasan: 'Tidak paham, coba tulis ulang.' } }];\n}\n\n// Nominal diproses dengan aturan, bukan AI\nfunction parseJumlah(s) {\n  const kali = { rb: 1e3, ribu: 1e3, k: 1e3, jt: 1e6, juta: 1e6 };\n  const re = /(\\d+(?:[.,]\\d+)*)\\s*(rb|ribu|k|jt|juta)?\\b/gi;\n  const polos = [];\n  let m;\n  while ((m = re.exec(s)) !== null) {\n    const unit = m[2] ? m[2].toLowerCase() : null;\n    if (unit) {\n      // \"1,5jt\" -> 1.5 x 1.000.000\n      return Math.round(parseFloat(m[1].replace(',', '.')) * kali[unit]);\n    }\n    // tanpa satuan: \"25.000\" atau \"25000\"\n    polos.push(parseInt(m[1].replace(/[.,]/g, ''), 10));\n  }\n  return polos.length ? Math.max(...polos) : null;\n}\n\nconst ATURAN = [\n  { kategori: 'Tagihan',   kata: ['paket data', 'kuota', 'pulsa', 'token listrik', 'listrik', 'wifi', 'indihome', 'pdam', 'bpjs', 'cicilan'] },\n  { kategori: 'Transport', kata: ['gojek', 'grab', 'ojol', 'bensin', 'pertamax', 'parkir', 'tol', 'krl', 'mrt', 'transjakarta'] },\n  { kategori: 'Belanja',   kata: ['indomaret', 'alfamart', 'shopee', 'tokopedia', 'lazada'] },\n  { kategori: 'Hiburan',   kata: ['netflix', 'spotify', 'bioskop', 'nonton', 'youtube premium'] },\n];\nconst dariAturan = t => {\n  const x = t.toLowerCase();\n  const a = ATURAN.find(r => r.kata.some(k => x.includes(k)));\n  return a ? a.kategori : null;\n};\nconst hasilAturan = dariAturan(teks);\n\nlet data = {};\ntry {\n  data = JSON.parse(raw);\n} catch (e) {\n  if (!hasilAturan) return gagal('Output AI bukan JSON valid');\n}\n\nconst kategori = hasilAturan ?? data.kategori;\nconst keterangan = String(data.keterangan ?? '').trim()\n  || (hasilAturan ? teks.replace(/\\d[\\d.,]*\\s*(rb|ribu|k|jt|juta)?/gi, '').trim() : '');\nconst jumlah = parseJumlah(teks);\n\nif (!KATEGORI.includes(kategori)) return gagal('Kategori tidak dikenal: ' + kategori);\nif (!keterangan) return gagal('Keterangan kosong');\nif (!jumlah || jumlah <= 0) return gagal('Nominal tidak ditemukan');\n\nconst tipe = kategori === 'Pemasukan' ? 'Pemasukan' : 'Pengeluaran';\n\nreturn [{\n  json: {\n    valid: true,\n    tanggal: $now.toFormat('yyyy-MM-dd'),\n    jumlah,\n    kategori,\n    keterangan,\n    tipe,\n    teks,\n    update_id: $('Siapkan Pesan').first().json.update_id,\n    status: 'Aktif',\n    balasan: `Tercatat: ${kategori} Rp${jumlah.toLocaleString('id-ID')} (${keterangan})`\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1376,
+        -592
+      ],
+      "id": "deddc8d4-1d2a-47c3-8e99-477018922e03",
+      "name": "Validasi output"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "<SPREADSHEET_ID>",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Transaksi",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Tanggal": "={{ $json.tanggal }}",
+            "Jumlah": "={{ $json.jumlah }}",
+            "Kategori": "={{ $json.kategori }}",
+            "Keterangan": "={{ $json.keterangan }}",
+            "Tipe": "={{ $json.tipe }}",
+            "Pesan Asli": "={{ $json.teks }}",
+            "ID": "={{ $json.update_id}}",
+            "Status": "={{ $json.status }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Tanggal",
+              "displayName": "Tanggal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Jumlah",
+              "displayName": "Jumlah",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Kategori",
+              "displayName": "Kategori",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Keterangan",
+              "displayName": "Keterangan",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Tipe",
+              "displayName": "Tipe",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Pesan Asli",
+              "displayName": "Pesan Asli",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ID",
+              "displayName": "ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1888,
+        -672
+      ],
+      "id": "92d2f99e-30c7-4d66-bf9b-b379a286e390",
+      "name": "Append row in sheet",
+      "credentials": {
+        "googleApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "Google Service Account account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot<BOT_TOKEN>/getUpdates?limit=1&offset={{ $json.offset }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -448,
+        -240
+      ],
+      "id": "0c1384ec-f463-4bcf-beea-a705086f416f",
+      "name": "Ambil Update",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const store = $getWorkflowStaticData('global');\n// Offset awal 0 = baca dari pesan pertama yang belum diambil\nreturn [{ json: { offset: store.offset ?? 0 } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -672,
+        -240
+      ],
+      "id": "12b2e9ba-be21-4892-b5bc-a0d4cafdacbd",
+      "name": "baca Offset"
+    },
+    {
+      "parameters": {
+        "jsCode": "const CHAT_ID_SAYA = Number('<YOUR_CHAT_ID>');\nconst store = $getWorkflowStaticData('global');\n\nconst hasil = $input.first().json.result ?? [];\nif (hasil.length === 0) return [];            // tidak ada pesan baru, alur berhenti\n\nconst update = hasil[0];\nstore.offset = update.update_id + 1;          // tandai pesan ini sudah dibaca\n\nconst msg = update.message;\nif (!msg || !msg.text) return [];             // bukan pesan teks\nif (msg.chat.id !== CHAT_ID_SAYA) return [];  // bukan dari kamu: diabaikan\n\nconst teks = msg.text.trim();\nconst dasar = { text: teks, chat_id: msg.chat.id, update_id: update.update_id };\n\nif (teks.startsWith('/')) {\n  const [kepala, ...sisa] = teks.split(/\\s+/);\n  const perintah = kepala.slice(1).split('@')[0].toLowerCase(); // buang /, buang @namabot\n  return [{ json: { ...dasar, jenis: 'perintah', perintah, argumen: sisa.join(' ') } }];\n}\n\nreturn [{ json: { ...dasar, jenis: 'transaksi' } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -256,
+        -240
+      ],
+      "id": "94e674f7-9616-4f53-ac62-6dec9a6c37cf",
+      "name": "Siapkan Pesan"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -912,
+        -240
+      ],
+      "id": "3ba7730b-5364-465b-88a4-bfde937afea8",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.jenis }}",
+                    "rightValue": "transaksi",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "ec751f4f-597d-4614-98cc-6a8a65f78553"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "transaksi"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "44a942cb-313d-4c13-9c39-812d12e7923a",
+                    "leftValue": "={{ $json.jenis }}",
+                    "rightValue": "perintah",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "perintah"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        96,
+        -16
+      ],
+      "id": "5cab1145-b1c4-4ecb-8bc5-3bfff5300657",
+      "name": "Jenis Pesan"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.perintah}}",
+                    "rightValue": "bantuan",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "46a88374-0606-42bd-8b2b-45e89d7a5326"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "bantuan"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "365e3836-8360-4dcf-8e69-15486079f72a",
+                    "leftValue": "={{ $json.perintah }}",
+                    "rightValue": "saldo",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "saldo"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "a7ffe9d6-9444-427d-adcc-383fa00e7339",
+                    "leftValue": "={{ $json.perintah }}",
+                    "rightValue": "batal",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "batal"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "4439544b-570f-4fac-9e3f-65a7285e4c9d",
+                    "leftValue": "={{ $json.perintah }}",
+                    "rightValue": "anggaran",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "anggaran"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "6204a1c3-f606-4987-b62c-4f6e868b1945",
+                    "leftValue": "={{ $json.perintah }}",
+                    "rightValue": "laporan",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "laporan"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        384,
+        272
+      ],
+      "id": "338dee9d-9843-408c-915a-82cd4ad1d7c9",
+      "name": "Perintah"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    chat_id: $('Siapkan Pesan').first().json.chat_id,\n    balasan:\n`Perintah yang tersedia:\n/bantuan - daftar perintah\n/saldo - saldo periode ini\n/anggaran - sisa anggaran per kategori\n/batal - batalkan transaksi terakhir\n\nContoh mencatat transaksi:\nmakan siang 25rb\ngojek 18.000\ndapat uang kiriman 200rb`\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        832,
+        -368
+      ],
+      "id": "4f938eb1-e395-4c8e-bca4-d759eb5208b6",
+      "name": "Teks Bantuan"
+    },
+    {
+      "parameters": {
+        "jsCode": "const mentah = $input.first().json.Nilai ?? '';\nconst saldo = parseInt(String(mentah).replace(/[^0-9-]/g, ''), 10);\nconst chat_id = $('Siapkan Pesan').first().json.chat_id;\n\nif (Number.isNaN(saldo)) {\n  return [{ json: { chat_id, balasan: 'Saldo belum bisa dibaca dari tab Pengaturan.' } }];\n}\n\nconst tanda = saldo < 0 ? '-' : '';\nreturn [{\n  json: {\n    chat_id,\n    balasan: `Saldo periode ini: ${tanda}Rp${Math.abs(saldo).toLocaleString('id-ID')}`\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        -192
+      ],
+      "id": "0c4a2e03-3868-4c4b-891c-145e93b052e4",
+      "name": "susun saldo"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id ?? $('Siapkan Pesan').first().json.chat_id }}",
+        "text": "={{ $json.balasan }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2624,
+        48
+      ],
+      "id": "09d8618b-d2e2-43a5-b1dc-de960f83908b",
+      "name": "Kirim Pesan",
+      "credentials": {
+        "telegramApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    chat_id: $('Siapkan Pesan').first().json.chat_id,\n    balasan: 'Perintah tidak dikenal. Ketik /bantuan untuk melihat daftar perintah.'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        816,
+        672
+      ],
+      "id": "d859a233-3eaf-4dfc-aac3-7659f2d16d5d",
+      "name": "Perintah Tak dikenali"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "8b060000-4f65-45d0-8d23-ad2b6ce75bfc",
+              "leftValue": "={{ $json.ada }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1360,
+        0
+      ],
+      "id": "aceee1d9-1ce8-400b-908b-70fccbfd6cac",
+      "name": "Ada?"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "<SPREADSHEET_ID>",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Transaksi",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_number": "={{ $json.row_number }}",
+            "Status": "Batal"
+          },
+          "matchingColumns": [
+            "row_number"
+          ],
+          "schema": [
+            {
+              "id": "Tanggal",
+              "displayName": "Tanggal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Jumlah",
+              "displayName": "Jumlah",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Kategori",
+              "displayName": "Kategori",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Keterangan",
+              "displayName": "Keterangan",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Tipe",
+              "displayName": "Tipe",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Pesan Asli",
+              "displayName": "Pesan Asli",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ID",
+              "displayName": "ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1648,
+        -96
+      ],
+      "id": "feab372e-863d-444a-b05b-5edb3b04d0ef",
+      "name": "Batalkan Baris",
+      "credentials": {
+        "googleApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "Google Service Account account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $('Cari Terakhir').first().json }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1856,
+        -96
+      ],
+      "id": "6ae781a3-fbf7-4603-b36f-93521d1ef759",
+      "name": "Susun Batal"
+    },
+    {
+      "parameters": {
+        "jsCode": "const baris = $input.all().map(i => i.json).filter(j => j.row_number);\nconst chat_id = $('Siapkan Pesan').first().json.chat_id;\n\nif (baris.length === 0) {\n  return [{ json: { ada: false, chat_id, balasan: 'Tidak ada transaksi aktif untuk dibatalkan.' } }];\n}\n\nconst terakhir = baris.reduce((a, b) => (b.row_number > a.row_number ? b : a));\nconst jumlah = parseInt(String(terakhir.Jumlah).replace(/[^0-9-]/g, ''), 10);\n\nreturn [{\n  json: {\n    ada: true,\n    chat_id,\n    row_number: terakhir.row_number,\n    balasan: `Dibatalkan: ${terakhir.Kategori} Rp${jumlah.toLocaleString('id-ID')} (${terakhir.Keterangan})`\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        0
+      ],
+      "id": "5527a308-524f-4d7a-a2d5-a54210a7f25a",
+      "name": "Cari Terakhir"
+    },
+    {
+      "parameters": {
+        "amount": 2
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2096,
+        -672
+      ],
+      "id": "a472b852-b08f-4ab2-a7ee-3572456bbe8b",
+      "name": "Tunggu"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "<SPREADSHEET_ID>",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1464323264,
+          "mode": "list",
+          "cachedResultName": "Anggaran",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit#gid=1464323264"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Kategori",
+              "lookupValue": "={{ $('Validasi').first().json.kategori }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2304,
+        -672
+      ],
+      "id": "91e0dbc7-e70e-4e90-8659-51f3f89b9309",
+      "name": "Get row(s) in sheet2",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "Google Service Account account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "dc8a7bcc-aa26-42ca-acaa-5b9c54eae799",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1648,
+        -592
+      ],
+      "id": "1ed54d3a-69ab-49cc-a5b1-0987dc8e44b7",
+      "name": "Validasi"
+    },
+    {
+      "parameters": {
+        "jsCode": "const dasar = $('Validasi').first().json;\nconst chat_id = $('Siapkan Pesan').first().json.chat_id;\nconst baris = $input.first().json;\nlet balasan = dasar.balasan;\n\nconst angka = v => parseInt(String(v ?? '').replace(/[^0-9-]/g, ''), 10);\nconst rp = n => 'Rp' + Math.abs(n).toLocaleString('id-ID');\n\nif (dasar.tipe === 'Pengeluaran' && baris['Batas Bulanan']) {\n  const batas = angka(baris['Batas Bulanan']);\n  const terpakai = angka(baris['Terpakai']);\n\n  if (batas > 0 && !Number.isNaN(terpakai)) {\n    const persen = Math.round((terpakai / batas) * 100);\n    if (terpakai >= batas) {\n      balasan += `\\nAnggaran ${dasar.kategori} terlampaui ${rp(terpakai - batas)}.`;\n    } else if (persen >= 80) {\n      balasan += `\\nPerhatian: anggaran ${dasar.kategori} terpakai ${persen}% (sisa ${rp(batas - terpakai)}).`;\n    }\n  }\n}\n\nreturn [{ json: { chat_id, balasan } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2512,
+        -672
+      ],
+      "id": "f72a8b4e-4a70-49f0-9de2-b126b023307d",
+      "name": "Susun Peringatan"
+    },
+    {
+      "parameters": {
+        "jsCode": "const baris = $input.all().map(i => i.json).filter(j => j.Kategori);\nconst chat_id = $('Siapkan Pesan').first().json.chat_id;\n\nconst angka = v => parseInt(String(v ?? '').replace(/[^0-9-]/g, ''), 10);\nconst rp = n => 'Rp' + Math.abs(n).toLocaleString('id-ID');\n\nif (baris.length === 0) {\n  return [{ json: { chat_id, balasan: 'Belum ada anggaran di tab Anggaran.' } }];\n}\n\nconst garis = baris\n  .map(b => ({ kategori: b.Kategori, batas: angka(b['Batas Bulanan']), terpakai: angka(b['Terpakai']) }))\n  .filter(b => b.batas > 0 && !Number.isNaN(b.terpakai))\n  .map(b => {\n    const persen = Math.round((b.terpakai / b.batas) * 100);\n    if (b.terpakai >= b.batas) {\n      return `${b.kategori}: terlampaui ${rp(b.terpakai - b.batas)} (${persen}%)`;\n    }\n    const peringatan = persen >= 80 ? ' (!)' : '';\n    return `${b.kategori}: sisa ${rp(b.batas - b.terpakai)} (terpakai ${persen}%)${peringatan}`;\n  });\n\nreturn [{\n  json: {\n    chat_id,\n    balasan: 'Anggaran periode ini:\\n' + garis.join('\\n')\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        176
+      ],
+      "id": "05dc3f4a-3b68-4878-920e-cbcaa7a77de6",
+      "name": "Susun Anggaran"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { mode: 'berjalan', chat_id: $('Siapkan Pesan').first().json.chat_id } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        384
+      ],
+      "id": "06b8ceb0-586e-499b-96da-361b3608d798",
+      "name": "Mode Berjalan"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "<SPREADSHEET_ID>",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1464323264,
+          "mode": "list",
+          "cachedResultName": "Anggaran",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit#gid=1464323264"
+        },
+        "filtersUI": {
+          "values": []
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        816,
+        176
+      ],
+      "id": "f6d6659b-3747-4b64-9c6a-195560a7b2cf",
+      "name": "Ambil Anggaran",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "Google Service Account account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "<SPREADSHEET_ID>",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Transaksi",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Status",
+              "lookupValue": "Aktif"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        816,
+        0
+      ],
+      "id": "babdec2a-83a1-4382-8c7f-94d8506c617f",
+      "name": "Ambil Status",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "Google Service Account account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "<SPREADSHEET_ID>",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 677488782,
+          "mode": "list",
+          "cachedResultName": "Pengaturan",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit#gid=677488782"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Kunci",
+              "lookupValue": "saldo_sekarang"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        832,
+        -192
+      ],
+      "id": "f7341008-af4d-42d0-bb79-147075705032",
+      "name": "Ambil Saldo",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "Google Service Account account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "<SPREADSHEET_ID>",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 677488782,
+          "mode": "list",
+          "cachedResultName": "Pengaturan",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit#gid=677488782"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Kunci",
+              "lookupValue": "saldo_awal"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        816,
+        384
+      ],
+      "id": "f650e599-9b84-489e-b62b-a938162434ba",
+      "name": "Baca Pengaturan",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "Google Service Account account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "<SPREADSHEET_ID>",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1464323264,
+          "mode": "list",
+          "cachedResultName": "Anggaran",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit#gid=1464323264"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1040,
+        384
+      ],
+      "id": "9ef4f989-f7be-4e64-a194-776e5d651b95",
+      "name": "Baca Anggaran",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "Google Service Account account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "<SPREADSHEET_ID>",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Transaksi",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1264,
+        384
+      ],
+      "id": "f6ba2df0-ce74-4df2-b63a-f632523c8daf",
+      "name": "Baca Transaksi",
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "Google Service Account account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const BULAN = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];\nconst PENDEK = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];\nconst TGL_MULAI = 2;\n\nlet info;\ntry { info = $('Mode Lalu').first().json; } catch (e) { info = $('Mode Berjalan').first().json; }\n\nconst angka = v => { const n = parseInt(String(v ?? '').replace(/[^0-9-]/g, ''), 10); return Number.isNaN(n) ? 0 : n; };\nconst rp = n => 'Rp' + Math.abs(n).toLocaleString('id-ID');\n\nfunction keIso(v) {\n  const s = String(v ?? '').trim();\n  if (typeof v === 'number' || /^\\d{5}$/.test(s)) {\n    return new Date(Date.UTC(1899, 11, 30) + Number(v) * 86400000).toISOString().slice(0, 10);\n  }\n  let m = s.match(/^(\\d{4})-(\\d{2})-(\\d{2})/);\n  if (m) return `${m[1]}-${m[2]}-${m[3]}`;\n    m = s.match(/^(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})/); // MM/dd/yyyy (format Sheets kamu)\n  if (m) return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;\n  return null;\n}\n\n// Periode: tanggal 2 sampai tanggal 1 bulan berikutnya\nlet awal = $now.startOf('day').set({ day: TGL_MULAI });\nif ($now.day < TGL_MULAI) awal = awal.minus({ months: 1 });\nif (info.mode === 'lalu') awal = awal.minus({ months: 1 });\nconst akhir = awal.plus({ months: 1 });\nconst hariAkhir = akhir.minus({ days: 1 });\nconst isoAwal = awal.toFormat('yyyy-MM-dd');\nconst isoAkhir = akhir.toFormat('yyyy-MM-dd');\nconst rentang = `${awal.day} ${PENDEK[awal.month - 1]} - ${hariAkhir.day} ${PENDEK[hariAkhir.month - 1]}`;\n\n// Data\nconst saldoAwal = angka($('Baca Pengaturan').first().json.Nilai);\nconst batas = {};\nfor (const it of $('Baca Anggaran').all()) {\n  if (it.json.Kategori) batas[it.json.Kategori] = angka(it.json['Batas Bulanan']);\n}\n\nconst trx = $input.all().map(i => i.json)\n  .filter(j => j.Status === 'Aktif')\n  .map(j => ({ iso: keIso(j.Tanggal), jumlah: angka(j.Jumlah), kategori: j.Kategori, ket: j.Keterangan, tipe: j.Tipe }))\n  .filter(t => t.iso && t.iso >= isoAwal && t.iso < isoAkhir && t.jumlah > 0);\n\nconst masuk = trx.filter(t => t.tipe === 'Pemasukan').reduce((a, t) => a + t.jumlah, 0);\nconst keluarList = trx.filter(t => t.tipe === 'Pengeluaran');\nconst keluar = keluarList.reduce((a, t) => a + t.jumlah, 0);\nconst selisih = masuk - keluar;\nconst saldoAkhir = saldoAwal + selisih;\n\nconst perKat = {};\nfor (const t of keluarList) perKat[t.kategori] = (perKat[t.kategori] || 0) + t.jumlah;\n\nconst barisKat = Object.entries(perKat)\n  .sort((a, b) => b[1] - a[1])\n  .map(([k, v]) => {\n    const persen = keluar > 0 ? Math.round((v / keluar) * 100) : 0;\n    const ang = batas[k] > 0 ? ` / anggaran ${rp(batas[k])}` : '';\n    return `${k} ${rp(v)} (${persen}%)${ang}`;\n  });\n\nconst terbesar = [...keluarList].sort((a, b) => b.jumlah - a.jumlah).slice(0, 3)\n  .map(t => `${t.ket} ${rp(t.jumlah)}`);\n\nconst judul = `Laporan ${BULAN[awal.month - 1]} ${awal.year} (${rentang})` + (info.mode === 'berjalan' ? ' - sementara' : '');\n\nlet balasan;\nif (trx.length === 0) {\n  balasan = `${judul}\\nBelum ada transaksi pada periode ini.`;\n} else {\n  balasan = [\n    judul,\n    `Pemasukan: ${rp(masuk)}`,\n    `Pengeluaran: ${rp(keluar)}`,\n    `Selisih: ${selisih >= 0 ? '+' : '-'}${rp(selisih)}`,\n    '',\n    'Per kategori:',\n    ...(barisKat.length ? barisKat : ['-']),\n    '',\n    `Terbesar: ${terbesar.length ? terbesar.join(', ') : '-'}`,\n    `Saldo akhir: ${saldoAkhir < 0 ? '-' : ''}${rp(saldoAkhir)}`\n  ].join('\\n');\n}\n\nreturn [{ json: { chat_id: info.chat_id, balasan } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        384
+      ],
+      "id": "d2aa9d30-d093-41ab-b659-651cfc220bc8",
+      "name": "Susun Laporan"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "months",
+              "triggerAtDayOfMonth": 2,
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        384,
+        624
+      ],
+      "id": "d26ecb18-989a-43a9-8eb4-dc1f08f84ee0",
+      "name": "Laporan Bulanan"
+    },
+    {
+      "parameters": {
+        "jsCode": "const CHAT_ID_SAYA = Number('<YOUR_CHAT_ID>');\nreturn [{ json: { mode: 'lalu', chat_id: CHAT_ID_SAYA } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        624
+      ],
+      "id": "e8047fdf-82d8-47e2-8e43-b3fbe3930281",
+      "name": "Mode Lalu"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d6c9644c-a9e6-43e9-b173-a9a4efd325cb",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "object",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1088,
+        -608
+      ],
+      "id": "9950180a-bfc5-4bb5-a7d2-715ed0d0eee8",
+      "name": "Cek Ollama"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    chat_id: $('Siapkan Pesan').first().json.chat_id,\n    balasan: 'Ollama tidak aktif atau terlalu lama merespons. Pesanmu belum tercatat, kirim ulang nanti.'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1376,
+        -768
+      ],
+      "id": "9caa3b1e-74ff-4fb1-8aca-d77c6de68a6a",
+      "name": "Ollama Mati"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "<SPREADSHEET_ID>",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Transaksi",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "ID",
+              "lookupValue": "={{ $json.update_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1872,
+        -896
+      ],
+      "id": "a3b6fae8-a0a3-40e6-ad30-1bbf900893e3",
+      "name": "Cek Duplikat",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "Google Service Account account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "4589a058-cee1-4177-9f93-87fa9704b895",
+              "leftValue": "={{ !!$json.ID }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2128,
+        -896
+      ],
+      "id": "b456ae86-5a93-44b4-b628-ee50c60f17f7",
+      "name": "Sudah Ada?"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $('Validasi').first().json }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        -880
+      ],
+      "id": "443b0f4e-1fab-44ad-b05a-e701d538cdca",
+      "name": "Pulihkan Data"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    chat_id: $('Siapkan Pesan').first().json.chat_id,\n    balasan: 'Transaksi ini sudah tercatat sebelumnya.'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2512,
+        -1024
+      ],
+      "id": "a9a30ecc-5f6e-41c6-8f39-aa1f4722acf1",
+      "name": "Sudah Tercatat"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Pesan": {
+      "main": [
+        [
+          {
+            "node": "Bangun Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bangun Prompt": {
+      "main": [
+        [
+          {
+            "node": "Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama": {
+      "main": [
+        [
+          {
+            "node": "Cek Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validasi output": {
+      "main": [
+        [
+          {
+            "node": "Validasi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ambil Update": {
+      "main": [
+        [
+          {
+            "node": "Siapkan Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "baca Offset": {
+      "main": [
+        [
+          {
+            "node": "Ambil Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Siapkan Pesan": {
+      "main": [
+        [
+          {
+            "node": "Jenis Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Tunggu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "baca Offset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jenis Pesan": {
+      "main": [
+        [
+          {
+            "node": "Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Perintah",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Perintah": {
+      "main": [
+        [
+          {
+            "node": "Teks Bantuan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ambil Saldo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ambil Status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ambil Anggaran",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mode Berjalan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Perintah Tak dikenali",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "susun saldo": {
+      "main": [
+        [
+          {
+            "node": "Kirim Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Teks Bantuan": {
+      "main": [
+        [
+          {
+            "node": "Kirim Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Perintah Tak dikenali": {
+      "main": [
+        [
+          {
+            "node": "Kirim Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ada?": {
+      "main": [
+        [
+          {
+            "node": "Batalkan Baris",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Kirim Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batalkan Baris": {
+      "main": [
+        [
+          {
+            "node": "Susun Batal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Susun Batal": {
+      "main": [
+        [
+          {
+            "node": "Kirim Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cari Terakhir": {
+      "main": [
+        [
+          {
+            "node": "Ada?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validasi": {
+      "main": [
+        [
+          {
+            "node": "Cek Duplikat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Kirim Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tunggu": {
+      "main": [
+        [
+          {
+            "node": "Get row(s) in sheet2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s) in sheet2": {
+      "main": [
+        [
+          {
+            "node": "Susun Peringatan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Susun Peringatan": {
+      "main": [
+        [
+          {
+            "node": "Kirim Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Susun Anggaran": {
+      "main": [
+        [
+          {
+            "node": "Kirim Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ambil Anggaran": {
+      "main": [
+        [
+          {
+            "node": "Susun Anggaran",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ambil Status": {
+      "main": [
+        [
+          {
+            "node": "Cari Terakhir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ambil Saldo": {
+      "main": [
+        [
+          {
+            "node": "susun saldo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mode Berjalan": {
+      "main": [
+        [
+          {
+            "node": "Baca Pengaturan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baca Pengaturan": {
+      "main": [
+        [
+          {
+            "node": "Baca Anggaran",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baca Anggaran": {
+      "main": [
+        [
+          {
+            "node": "Baca Transaksi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baca Transaksi": {
+      "main": [
+        [
+          {
+            "node": "Susun Laporan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Susun Laporan": {
+      "main": [
+        [
+          {
+            "node": "Kirim Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Laporan Bulanan": {
+      "main": [
+        [
+          {
+            "node": "Mode Lalu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mode Lalu": {
+      "main": [
+        [
+          {
+            "node": "Baca Pengaturan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cek Ollama": {
+      "main": [
+        [
+          {
+            "node": "Ollama Mati",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validasi output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Mati": {
+      "main": [
+        [
+          {
+            "node": "Kirim Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cek Duplikat": {
+      "main": [
+        [
+          {
+            "node": "Sudah Ada?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sudah Ada?": {
+      "main": [
+        [
+          {
+            "node": "Sudah Tercatat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pulihkan Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pulihkan Data": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sudah Tercatat": {
+      "main": [
+        [
+          {
+            "node": "Kirim Pesan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "timezone": "Asia/Jakarta",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "saveDataSuccessExecution": "none"
+  },
+  "nodeGroups": [],
+  "tags": []
+}

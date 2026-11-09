@@ -1,0 +1,5 @@
+Tanggal,Jumlah,Kategori,Keterangan,Tipe,Pesan Asli,ID,Status
+2026-11-02,25000,Makanan,makan siang,Pengeluaran,makan siang 25rb,100001,Aktif
+2026-11-02,18000,Transport,gojek,Pengeluaran,gojek ke kampus 18rb,100002,Aktif
+2026-11-03,500000,Pemasukan,uang kiriman,Pemasukan,dapat uang kiriman 500rb,100003,Aktif
+2026-11-03,50000,Tagihan,paket data,Pengeluaran,beli paket data 50rb,100004,Batal

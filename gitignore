@@ -1,0 +1,16 @@
+# Secrets and credentials
+.env
+*.env
+*credentials*.json
+*service-account*.json
+*-key.json
+
+# n8n local data
+.n8n/
+
+# Real (non-dummy) exports
+*.private.json
+*.xlsx
+
+# Google service-account key downloaded as <project>-<12-hex-chars>.json
+*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
